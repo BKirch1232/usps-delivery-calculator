@@ -17,6 +17,7 @@ class USPSCalculator:
             "Media Mail": {"base_days": 4, "base_sigma": 2.5, "guaranteed": False}
         }
         current_year = datetime.now().year
+        # Pre-load US holidays for current and next few years
         self.us_holidays = holidays.US(years=[current_year, current_year + 1, current_year + 2])
 
     def estimate_zone(self, zip_from, zip_to):
@@ -133,73 +134,4 @@ st.write("Calculate realistic delivery probabilities factoring in zones, seasona
 tab1, tab2 = st.tabs(["📌 Single Package", "📁 Bulk E-commerce Upload"])
 calc = USPSCalculator()
 
-# --- TAB 1: SINGLE PACKAGE ---
-with tab1:
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        zip_from = st.text_input("Origin Zip Code", value="10001", max_chars=5)
-        service_name = st.selectbox("Service Type", list(calc.services.keys()))
-        late_dropoff = st.checkbox("🕒 Dropping off after 5 PM? (Shifts to next business day)")
-    
-    with col2:
-        zip_to = st.text_input("Destination Zip Code", value="90210", max_chars=5)
-        ship_date = st.date_input("Shipment Date")
-    
-    if st.button("Calculate Delivery Expectation", type="primary"):
-        if len(zip_from) >= 5 and len(zip_to) >= 5 and zip_from.isdigit() and zip_to.isdigit():
-            result = calc.get_delivery_estimate(zip_from, zip_to, service_name, ship_date, late_dropoff)
-            
-            st.divider()
-            
-            metric_col1, metric_col2, metric_col3 = st.columns(3)
-            metric_col1.metric("USPS Quoted Target", f"{result['Target Days']} days")
-            metric_col2.metric("Adjusted Expected", f"{result['Expected Days (μ)']} days")
-            metric_col3.metric("Confidence Level", f"{result['Confidence']}%")
-            
-            st.success(f"**Estimated Delivery Date:** {result['Delivery Date']}")
-            
-            # --- NEW: Total Impact Breakdown ---
-            with st.expander("🔍 See exactly what impacted this timeline", expanded=True):
-                st.write("**Mathematical Breakdown**")
-                for key, value in result["Impact Breakdown"].items():
-                    if "Total" in key:
-                        st.markdown(f"**{key}: {value}**")
-                    else:
-                        st.write(f"- {key}: {value}")
-                
-                st.write("---")
-                st.write("**Non-Working Calendar Days Skipped**")
-                if result["Skipped Calendar Days"]:
-                    for skip in result["Skipped Calendar Days"]:
-                        st.write(f"🛑 {skip}")
-                else:
-                    st.write("✅ No Sundays or Federal Holidays encountered.")
-                    
-                st.write("---")
-                st.write("**Seasonal & Route Risk Factors**")
-                for risk in result["Risk Factors"]:
-                    st.write(f"- {risk}")
-            
-            st.subheader("📈 Probability Distribution Curve")
-            mu = result['Expected Days (μ)']
-            sigma = result['Variance (σ)']
-            x = np.linspace(max(0, mu - 3*sigma), mu + 4*sigma, 100)
-            y = stats.norm.pdf(x, mu, sigma)
-            
-            chart_data = pd.DataFrame({'Days in Transit': x, 'Probability Density': y}).set_index('Days in Transit')
-            st.area_chart(chart_data)
-            
-        else:
-            st.error("Please enter valid 5-digit Zip Codes.")
-
-# --- TAB 2: BULK UPLOAD ---
-with tab2:
-    st.subheader("Process Multiple Orders (CSV)")
-    st.write("Upload a CSV file containing your orders. Columns needed: **Origin**, **Destination**, and **Service**.")
-    
-    template_df = pd.DataFrame({"Origin": ["10001", "33101"], "Destination": ["90210", "60601"], "Service": ["Priority", "Ground Advantage"]})
-    st.download_button("📥 Download CSV Template", data=template_df.to_csv(index=False), file_name="usps_template.csv", mime="text/csv")
-    
-    uploaded_file = st.file_uploader("Upload filled CSV", type=["csv"])
-    bulk_date = st.date_input("Shipment Date for
+# --- TAB
