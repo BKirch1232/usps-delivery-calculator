@@ -31,28 +31,19 @@ class USPSCalculator:
         weather_delay = 0.0
         risk_factors = []
         
-        # 1. Peak Season Network Congestion (Nov - Dec)
         if month in [11, 12]:
             weather_delay += 0.5 + (zone * 0.05)
-            risk_factors.append("🎄 Peak Holiday Season (High Volume Network Congestion)")
-
-        # 2. Winter risks (Jan - Mar) for North/Midwest
+            risk_factors.append("🎄 Q4 Peak Season Congestion")
         if month in [1, 2, 3] and (from_prefix in [0,1,2,5,6,7] or to_prefix in [0,1,2,5,6,7]):
             weather_delay += 0.5 + (zone * 0.1)
-            risk_factors.append("❄️ Winter Season Routing Risk (Potential Ice/Snow delays)")
-            
-        # 3. Summer Storm risks (Aug - Oct) for South
+            risk_factors.append("❄️ Winter Weather Routing Risk")
         if month in [8, 9, 10] and (from_prefix in [3,4] or to_prefix in [3,4]):
             weather_delay += 0.4 + (zone * 0.05)
-            risk_factors.append("🌪️ Late Summer Storm Risk (Hurricane/Flood zones)")
+            risk_factors.append("🌪️ Late Summer Storm Risk")
             
-        # 4. Distance Detour Risk
         detour_delay = (zone * 0.15)
         if zone >= 5:
             risk_factors.append("🛣️ Long-Distance Hub Transfer Risk")
-            
-        if not risk_factors:
-            risk_factors.append("✅ Clear Seasonal Routing expected")
             
         return round(weather_delay, 2), round(detour_delay, 2), risk_factors
 
@@ -64,20 +55,28 @@ class USPSCalculator:
 
     def get_delivery_estimate(self, zip_from, zip_to, service_name, ship_date, late_dropoff=False):
         active_date = ship_date
-        skipped_holidays = [] # New tracking list for UI transparency
+        skipped_days_log = []
         
-        # Shift start date if dropped off after 5 PM
-        if late_dropoff:
+        # 1. Check Origin Date for Sundays, Holidays, or Late Dropoff
+        while active_date.weekday() == 6 or active_date in self.us_holidays or late_dropoff:
+            if active_date in self.us_holidays:
+                holiday_name = self.us_holidays.get(active_date)
+                skipped_days_log.append(f"Origin Paused: {holiday_name} ({active_date.strftime('%b %d')})")
+            elif active_date.weekday() == 6:
+                skipped_days_log.append(f"Origin Paused: Sunday ({active_date.strftime('%b %d')})")
+            elif late_dropoff:
+                skipped_days_log.append("Origin Paused: After-hours dropoff (Shifts to next day)")
+            
+            late_dropoff = False # Reset so we don't infinitely loop
             active_date += timedelta(days=1)
-            while active_date.weekday() == 6 or active_date in self.us_holidays:
-                if active_date in self.us_holidays:
-                    skipped_holidays.append(f"{self.us_holidays.get(active_date)} ({active_date.strftime('%b %d')})")
-                active_date += timedelta(days=1)
 
         service = self.services[service_name]
         zone = self.estimate_zone(zip_from, zip_to)
         zone_multiplier = 0.4 if service_name == "Media Mail" else 0.25
-        target_days = math.ceil(service["base_days"] + (zone * zone_multiplier))
+        
+        base = service["base_days"]
+        zone_penalty = zone * zone_multiplier
+        target_days = math.ceil(base + zone_penalty)
         
         weather_delay, detour_delay, risk_factors = self.assess_route_risks(zip_from, zip_to, active_date, zone)
         
@@ -85,18 +84,28 @@ class USPSCalculator:
         sigma = service["base_sigma"] + (zone * 0.15) + (weather_delay * 0.5) + (detour_delay * 0.4)
         confidence = self.calculate_confidence(target_days, mu, sigma)
         
-        # Calculate final delivery date skipping Sundays AND Holidays
+        # 2. Iterate through Transit Calendar
         delivery_date = active_date
         days_to_add = math.ceil(mu)
         
         while days_to_add > 0:
             delivery_date += timedelta(days=1)
             if delivery_date in self.us_holidays:
-                # Record the specific holiday we hit!
                 holiday_name = self.us_holidays.get(delivery_date)
-                skipped_holidays.append(f"{holiday_name} ({delivery_date.strftime('%b %d')})")
-            elif delivery_date.weekday() != 6: 
+                skipped_days_log.append(f"Transit Paused: {holiday_name} ({delivery_date.strftime('%b %d')})")
+            elif delivery_date.weekday() == 6: 
+                skipped_days_log.append(f"Transit Paused: Sunday ({delivery_date.strftime('%b %d')})")
+            else:
                 days_to_add -= 1
+
+        # 3. Create the Impact Breakdown
+        impact_breakdown = {
+            "Base Transit Time": f"{base} days",
+            "Distance Penalty (Zone)": f"+{round(zone_penalty, 2)} days",
+            "Weather/Seasonal Delay": f"+{weather_delay} days",
+            "Logistical Detour Risk": f"+{detour_delay} days",
+            "Total Working Days (μ)": f"{round(mu, 2)} days"
+        }
 
         return {
             "Service": service_name,
@@ -109,7 +118,8 @@ class USPSCalculator:
             "Delivery Date": delivery_date.strftime("%Y-%m-%d (%A)"),
             "Confidence": round(confidence, 2),
             "Risk Factors": risk_factors,
-            "Skipped Holidays": list(set(skipped_holidays)) # Remove duplicates if any
+            "Skipped Calendar Days": skipped_days_log,
+            "Impact Breakdown": impact_breakdown
         }
 
 # ==========================================
@@ -149,15 +159,29 @@ with tab1:
             
             st.success(f"**Estimated Delivery Date:** {result['Delivery Date']}")
             
-            # --- NEW: Explicitly show if holidays impacted the route ---
-            if result["Skipped Holidays"]:
-                st.warning("🗓️ **Holiday Delay Triggered:** USPS operations paused for: " + ", ".join(result["Skipped Holidays"]))
-            
-            st.info("**Algorithmic Risk Assessment applied:**\n" + "\n".join([f"* {risk}" for risk in result["Risk Factors"]]))
+            # --- NEW: Total Impact Breakdown ---
+            with st.expander("🔍 See exactly what impacted this timeline", expanded=True):
+                st.write("**Mathematical Breakdown**")
+                for key, value in result["Impact Breakdown"].items():
+                    if "Total" in key:
+                        st.markdown(f"**{key}: {value}**")
+                    else:
+                        st.write(f"- {key}: {value}")
+                
+                st.write("---")
+                st.write("**Non-Working Calendar Days Skipped**")
+                if result["Skipped Calendar Days"]:
+                    for skip in result["Skipped Calendar Days"]:
+                        st.write(f"🛑 {skip}")
+                else:
+                    st.write("✅ No Sundays or Federal Holidays encountered.")
+                    
+                st.write("---")
+                st.write("**Seasonal & Route Risk Factors**")
+                for risk in result["Risk Factors"]:
+                    st.write(f"- {risk}")
             
             st.subheader("📈 Probability Distribution Curve")
-            st.write("This chart visualizes the likelihood of your package arriving on specific days based on standard deviation.")
-            
             mu = result['Expected Days (μ)']
             sigma = result['Variance (σ)']
             x = np.linspace(max(0, mu - 3*sigma), mu + 4*sigma, 100)
@@ -172,31 +196,10 @@ with tab1:
 # --- TAB 2: BULK UPLOAD ---
 with tab2:
     st.subheader("Process Multiple Orders (CSV)")
-    st.write("Upload a CSV file containing your orders. The CSV must have columns named exacty: **Origin**, **Destination**, and **Service**.")
+    st.write("Upload a CSV file containing your orders. Columns needed: **Origin**, **Destination**, and **Service**.")
     
     template_df = pd.DataFrame({"Origin": ["10001", "33101"], "Destination": ["90210", "60601"], "Service": ["Priority", "Ground Advantage"]})
     st.download_button("📥 Download CSV Template", data=template_df.to_csv(index=False), file_name="usps_template.csv", mime="text/csv")
     
     uploaded_file = st.file_uploader("Upload filled CSV", type=["csv"])
-    bulk_date = st.date_input("Shipment Date for all orders")
-    bulk_late = st.checkbox("🕒 All orders dropping off after 5 PM?")
-    
-    if uploaded_file is not None:
-        try:
-            df = pd.read_csv(uploaded_file)
-            if st.button("Process Bulk Orders"):
-                with st.spinner("Calculating logistics..."):
-                    results_list = []
-                    for index, row in df.iterrows():
-                        res = calc.get_delivery_estimate(str(row["Origin"]), str(row["Destination"]), row["Service"], bulk_date, bulk_late)
-                        res.pop("Risk Factors")
-                        res["Skipped Holidays"] = ", ".join(res["Skipped Holidays"]) # Flatten list for CSV
-                        results_list.append(res)
-                        
-                    results_df = pd.DataFrame(results_list)
-                    st.dataframe(results_df, use_container_width=True)
-                    
-                    csv = results_df.to_csv(index=False)
-                    st.download_button(label="💾 Download Processed Results", data=csv, file_name="usps_estimates_processed.csv", mime="text/csv")
-        except Exception as e:
-            st.error(f"Error processing file. Ensure columns match the template. Error: {e}")
+    bulk_date = st.date_input("Shipment Date for
